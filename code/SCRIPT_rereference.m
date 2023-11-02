@@ -7,7 +7,8 @@
 % Written by John Stout - edit on 11/2/23
 
 % mode for rereferencing (average or median)
-mode_reref = 'average'; % alternative is 'median'
+mode_reref = 'median'; % alternative is 'median'
+fs = 32000; % sampling rate
 
 % hardcode this
 nlx_folder = getCurrentPath;
@@ -16,6 +17,7 @@ addpath(nlx_folder);
 % Written by John Stout - 9/27/23
 datafolder = input('Enter directory of data: ','s');
 cd(datafolder);
+close all;
 
 % csc_names can be of type str or double
 % csc_names are the names of your csc data. If 1-16, just use double.
@@ -54,8 +56,20 @@ for i = 1:length(csc_names)
     [Timestamps, ChannelNumbers, SampleFrequencies, NumberOfValidSamples,...
         Samples, Header] = Nlx2MatCSC(dir, [1 1 1 1 1], 1, 1, []);
 
-    % concatenate
-    Samples3D(:,:,i) = Samples;
+    % Sanity check
+    if round(SampleFrequencies(1)) ~= fs
+        error('Defined sampling rate does not match data sampling rate - fix')
+    end
+
+    % notch filt - you have to vectorize first
+    samples_notch = [];
+    samples_notch = notchfilt(Samples(:),fs,[58 62]);
+
+    % make back into matrix for saving purposes
+    samples_notch = reshape(samples_notch,size(Samples));
+
+    % concatenate into 1 3D array
+    Samples3D(:,:,i) = samples_notch;
 end
 
 %% visualize briefly
@@ -63,8 +77,8 @@ end
 % Get the center of the dataset and plot 10s
 idx_mid = round(length(Timestamps)/2);
 srate_crunch = round(32000/512);
-ts_start = find(Timestamps==Timestamps(idx_mid-(srate_crunch*10)));
-ts_end = find(Timestamps==Timestamps(idx_mid+(srate_crunch*10)));
+ts_start = find(Timestamps==Timestamps(idx_mid-(srate_crunch*10*5)));
+ts_end = find(Timestamps==Timestamps(idx_mid+(srate_crunch*10*5)));
 
 % colors
 tt_counts = size(Samples3D,3)/4;
@@ -77,6 +91,8 @@ end
 disp('This figure assumes that every 4 wires is a new tetrode')
 tt_counter = 1; rem_ch = []; channel_counter = [];
 for i = 1:4:size(Samples3D,3)
+
+    % first figure zoomed out
     figure('color','w');
     channel_counter{tt_counter} = i:i+3;
     data_tt = []; data_channel = [];
@@ -94,6 +110,18 @@ for i = 1:4:size(Samples3D,3)
         plot(data_channel(:,ploti),'k')
         title(['Tetrode',num2str(tt_counter),', Channel',num2str(ploti)])
     end
+
+    % second figure zoomed in
+    figure('color','w');
+
+    % plot results is separate to troubleshoot data_channel if needed
+    for ploti = 1:size(data_tt,3)
+        % plot data
+        subplot(tt_counts,1,ploti)
+        plot(data_channel(1:fs,ploti),'k')
+        title(['Tetrode',num2str(tt_counter),', Channel',num2str(ploti)])
+    end
+
     rem_ch{tt_counter} = str2num(input('Enter channels to exclude from CAR (e.g. enter "1,3" to remove channels 1 and 3): ','s'));
     tt_counter = tt_counter+1;
     close;
@@ -115,7 +143,7 @@ channel_log(ch_ex)=0;
 disp('Getting avg across channels. This might take a minute...')
 
 %% mode for rereferencing
-if contains(mode,'median')
+if contains(mode_reref,'median')
     disp('Collecting the common median')
     cr = median(Samples3D(:,:,channel_log),3);
 else % default is average
@@ -124,15 +152,18 @@ else % default is average
 end
 
 %% Common average rereference
-clearvars -except datafolder csc_names Samples3D ca channel_idx channel_log ch_idx
+clearvars -except datafolder csc_names Samples3D cr channel_idx channel_log ch_idx mode_reref
 disp('Performing the common avg rereferencing... may take a few moments...')
-SamplesRef = zeros(size(Samples3D));
 SamplesRef = cell([1 size(Samples3D,3)]);
 for i = 1:size(Samples3D,3)
     SamplesRef{i} = Samples3D(:,:,i)-cr;
 end
 % remove tagged channels
-SamplesRef{~channel_log}=[];
+for i = 1:length(channel_log)
+    if channel_log(i) == 0
+        SamplesRef{i}=[];
+    end
+end
 
 %% cross correlation
 data2cor_og = []; data2cor_ref = [];
@@ -186,47 +217,63 @@ legend('OG signal','Reref signal')
 savefig('fig_channelComparison_rereference');
 
 %% Save out CSC data
-disp('Saving output. This could take a minute...'); counter = 1;
-for i = csc_names
+ready2save = input('Are you ready to save? (y/n): If "n", rerun code after it exits: ','s');
+if contains(ready2save,[{'y'} {'Y'}])
 
-    % define csc name in raw format
-    if contains(class(csc_names),'double')
-        varName = strcat('\CSC',num2str(csc_names(i)),'.ncs');
-    else
-        varName = strcat('\',csc_names{i},'.ncs');    
-    end
+    disp('Saving output. This could take a minute...'); counter = 1;
+    for i = 1:length(csc_names)
     
-    % checking for data and skipping if not present
-    if isempty(SamplesRef{i})
-        disp(['Skipping ',varName])
-        continue
+        % define csc name in raw format
+        if contains(class(csc_names),'double')
+            varName = strcat('\CSC',num2str(csc_names(i)),'.ncs');
+        else
+            varName = strcat('\',csc_names{i},'.ncs');    
+        end
+        
+        % checking for data and skipping if not present
+        if isempty(SamplesRef{i})
+            disp(['Skipping ',varName])
+            continue
+        end
+    
+        % load csc
+        disp(['loading csc',num2str(i)])
+        [Timestamps, ChannelNumbers, SampleFrequencies, NumberOfValidSamples,...
+            ~, Header] = Nlx2MatCSC(strcat(datafolder,varName), [1 1 1 1 1], 1, 1, []);
+    
+        % use the loaded data to save out csc
+        varSave = ['\csc_car',num2str(i),'.ncs'];
+        AppendToFileFlag = 0; 
+        ExportMode = 1;
+        ExportModeVector = 1;
+        FieldSelectionFlags = [1 1 1 1 1 1];
+
+        % add a save_name variable
+        if contains(mode_reref,'median')
+            save_mode = 'cmr';
+        else
+            save_mode = 'car';
+        end
+        if contains(class(csc_names),'double')
+            saveName = strcat('\CSC',num2str(csc_names(i)),'_',save_mode,'.ncs');
+        else
+            saveName = strcat('\',csc_names{i},'_',save_mode,'.ncs');    
+        end
+
+        % write csc file
+        Samples = [];
+        Samples = SamplesRef{i};
+        disp(['Writing ',saveName])
+        Mat2NlxCSC(strcat(datafolder,saveName), AppendToFileFlag, ExportMode, ExportModeVector,...
+             FieldSelectionFlags, Timestamps, ChannelNumbers,...
+             SampleFrequencies, NumberOfValidSamples, Samples, Header);
+         
+        % add to counter
+        counter = counter+1;
+    
     end
-
-    % load csc
-    disp(['loading csc',num2str(i)])
-    [Timestamps, ChannelNumbers, SampleFrequencies, NumberOfValidSamples,...
-        ~, Header] = Nlx2MatCSC(strcat(datafolder,varName), [1 1 1 1 1], 1, 1, []);
-
-    % use the loaded data to save out csc
-    varSave = ['\csc_car',num2str(i),'.ncs'];
-    AppendToFileFlag = 0; 
-    ExportMode = 1;
-    ExportModeVector = 1;
-    FieldSelectionFlags = [1 1 1 1 1 1];
-
-    % write csc file
-    Samples = [];
-    Samples = SamplesRef{i};
-    disp(['Writing csc_ca',num2str(i),'.ncs'])
-    Mat2NlxCSC(strcat(datafolder,varSave), AppendToFileFlag, ExportMode, ExportModeVector,...
-         FieldSelectionFlags, Timestamps, ChannelNumbers,...
-         SampleFrequencies, NumberOfValidSamples, Samples, Header);
-     
-    % add to counter
-    counter = counter+1;
-
 end
-
+close all;
 %{
 %% troubleshooting purposes (ignore)
 [Timestamps, ChannelNumbers, SampleFrequencies, NumberOfValidSamples,...

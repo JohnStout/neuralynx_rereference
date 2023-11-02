@@ -9,6 +9,8 @@
 % mode for rereferencing (average or median)
 mode_reref = 'median'; % alternative is 'median'
 fs = 32000; % sampling rate
+notch_filt = 'y'; % Whether or whether not to notch filter
+notch_range = [58 62]; % notch filter range
 
 % hardcode this
 nlx_folder = getCurrentPath;
@@ -61,15 +63,21 @@ for i = 1:length(csc_names)
         error('Defined sampling rate does not match data sampling rate - fix')
     end
 
-    % notch filt - you have to vectorize first
-    samples_notch = [];
-    samples_notch = notchfilt(Samples(:),fs,[58 62]);
-
-    % make back into matrix for saving purposes
-    samples_notch = reshape(samples_notch,size(Samples));
-
-    % concatenate into 1 3D array
-    Samples3D(:,:,i) = samples_notch;
+    if contains(notch_filt,[{'y'} {'Y'}])
+        disp(['Performing Notch Filtering for ',num2str(notch_range)])
+        % notch filt - you have to vectorize first
+        samples_notch = [];
+        samples_notch = notchfilt(Samples(:),fs,notch_range);
+    
+        % make back into matrix for saving purposes
+        samples_notch = reshape(samples_notch,size(Samples));
+    
+        % concatenate into 1 3D array
+        Samples3D(:,:,i) = samples_notch;
+    else
+        % concatenate into 1 3D array
+        Samples3D(:,:,i) = Samples;  
+    end
 end
 
 %% visualize briefly
